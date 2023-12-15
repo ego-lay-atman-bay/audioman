@@ -131,7 +131,7 @@ class Audio:
 
         Args:
             duration (float): Duration in seconds.
-            sample_rate (int, optional): Sample rate. Defaults to `Audio.sample_rate`.
+            sample_rate (int, optional): Sample rate. Defaults to `self.sample_rate`.
 
         Returns:
             int: duration in samples
@@ -141,6 +141,22 @@ class Audio:
             sample_rate = self.sample_rate
         
         return int(duration * sample_rate)
+    
+    def samples_to_seconds(self, duration: int, sample_rate: int = None) -> float:
+        """Converts samples to seconds.
+
+        Args:
+            duration (int): Duration in samples
+            sample_rate (int, optional): Sample rate. Defaults to `self.sample_rate`.
+
+        Returns:
+            float: Seconds.
+        """
+        
+        if sample_rate == None:
+            sample_rate = self.sample_rate
+            
+        return duration / sample_rate
     
     def add_silence(self, start: int = 0, length: int = None) -> 'Audio':
         """Add silence to audio.
@@ -213,8 +229,15 @@ class Audio:
         if length == None:
             length = start
             start = 0
+            
+        if start < 0:
+            start += 1
+            
+            if start == 0:
+                return self.copy()
+            start = self.length + start
         
-        end = start + length
+        end = min(start + length, self.length)
         
         samples = self.samples.swapaxes(1,0)[start:end].swapaxes(1,0)
         return Audio(samples, sample_rate = self.sample_rate)
@@ -256,7 +279,13 @@ class Audio:
         samples = self.samples.copy()
 
         length = len(scaler)
-        end = start + length
+        
+        if start < 0:
+            # start += 1
+            start = self.length + start
+        
+        end = min(start + length, self.length)
+        scaler = scaler[:end - start]
 
         for channel in samples:
             channel[start:end] = channel[start:end] * scaler
