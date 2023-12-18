@@ -1,0 +1,27 @@
+name: Sphinx build
+
+on: 
+  release:
+    types: [created]
+  
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - name: Install dependencies
+      run:
+        pip install -r ./requirements.txt &&
+        pip install -r ./doc_build/requirements.txt
+    
+    - name: Upload artifacts
+      run:
+        sphinx_build -b html doc-build docs
+    
+    - name: Deploy
+      uses: peaceiris/actions-gh-pages@v3
+      with:
+        github_token: ${{ secrets.GH_TOKEN }}
+        publish_dir: docs/
