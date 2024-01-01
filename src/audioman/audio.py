@@ -50,7 +50,6 @@ class Audio:
                 prefix = 'audioman_',
                 suffix = '.wav',
                 delete = False,
-                delete_on_close = False,
             ) as file:
                 file.write('')
             
@@ -71,7 +70,7 @@ class Audio:
             self.save(self.cache_filename)
             self.samples = None
         except:
-            pass
+            logging.exception(f'cannot save file {self.cache_filename}')
         self.filename = filename
     
     @property
