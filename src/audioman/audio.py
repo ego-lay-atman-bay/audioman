@@ -70,7 +70,7 @@ class Audio:
             self.save(self.cache_filename)
             self.samples = None
         except:
-            logging.exception(f'cannot save file {self.cache_filename}')
+            logging.debug(f'cannot save file {self.cache_filename}', exc_info = True)
         self.filename = filename
     
     @property
