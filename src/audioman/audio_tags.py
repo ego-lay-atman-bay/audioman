@@ -174,12 +174,12 @@ class AudioTags(dict):
             raise TypeError('tag must be str')
         
         if isinstance(tag, dict):
-            for tag in tag:
-                self.setdefault(tag, tag[tag])
+            for name in tag:
+                self.setdefault(name, tag[name])
             return
         elif isinstance(tag, list):
-            for tag in tag:
-                self.setdefault(tag[0], tag[1])
+            for name in tag:
+                self.setdefault(name[0], name[1])
             return
 
         tag = tag.lower()
