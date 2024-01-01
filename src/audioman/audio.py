@@ -345,10 +345,10 @@ class Audio:
         return audio
     
     def mix(self, audio2: 'Audio') -> 'Audio':
-        """Mix audio together. This will overlay this audio an the new audio onto each other, so they play at the same time.
+        """Mix audio together. This will overlay this audio and the new audio onto each other, so they play at the same time.
 
         Args:
-            audio2 (Audio): Audio to mix into this audio
+            audio2 (Audio): Audio to mix into this audio.
 
         Returns:
             Audio: New mixed audio.
