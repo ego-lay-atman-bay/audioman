@@ -1,9 +1,11 @@
 import typing
 
+import logging
 import os
 from copy import deepcopy
 import numpy
 import soundfile
+import tempfile
 
 from .effect import Effect
 from .audio_tags import AudioTags
@@ -18,6 +20,7 @@ class Audio:
         """
         self._samples: numpy.ndarray = None
         self.filename: str = ''
+        
         self.tags = AudioTags()
         
         if isinstance(file, str):
@@ -32,7 +35,45 @@ class Audio:
             self.sample_rate = sample_rate
             
             self.samples: numpy.ndarray = file.copy()
+    
+    @property
+    def cache_filename(self) -> str:
+        """The cache filename to use when using the `.unload()` method.
+
+        Returns:
+            str: filename
+        """
+        if not hasattr(self, '_cache_filename') or not os.path.exists(self._cache_filename):
             
+            with tempfile.NamedTemporaryFile(
+                'w',
+                prefix = 'audioman_',
+                suffix = '.wav',
+                delete = False,
+                delete_on_close = False,
+            ) as file:
+                file.write('')
+            
+            self._cache_filename = file.name
+        
+        return self._cache_filename
+
+    def __del__(self):
+        if hasattr(self, '_cache_filename') and os.path.exists(self._cache_filename):
+            os.remove(self._cache_filename)
+            logging.debug(f'deleted: {self._cache_filename}')
+            
+    def unload(self):
+        """Unload audio samples to save memory. This will also create a temporary wav file in the os temp directory. When you try to access the samples, this temporary file will be loaded (or at least it will try to load it).
+        """
+        filename = self.filename
+        try:
+            self.save(self.cache_filename)
+            self.samples = None
+        except:
+            pass
+        self.filename = filename
+    
     @property
     def samples(self) -> numpy.ndarray:
         """Audio samples as numpy array.
@@ -41,7 +82,13 @@ class Audio:
             numpy.ndarray: Numpy array. Shape is (channels, length)
         """
         if self._samples is None:
-            self.read()
+            filename = self.filename
+            try:
+                self.read(self.cache_filename)
+            except:
+                self.read(filename)
+            
+            self.filename = filename
         
         return self._samples
     @samples.setter
@@ -60,18 +107,20 @@ class Audio:
         """
         if not filename == None:
             self.filename = filename
+        if filename == None:
+            filename = self.filename
         
-        if not os.path.exists(self.filename):
-            raise FileNotFoundError(f"file '{self.filename}' not found")
-        if os.path.isdir(self.filename):
-            raise IsADirectoryError(f"path '{self.filename}' is a directory, not a file")
+        if not os.path.exists(filename):
+            raise FileNotFoundError(f"file '{filename}' not found")
+        if os.path.isdir(filename):
+            raise IsADirectoryError(f"path '{filename}' is a directory, not a file")
         
-        audio, self.sample_rate = soundfile.read(self.filename, always_2d = True)
+        audio, self.sample_rate = soundfile.read(filename, always_2d = True)
         self.samples = audio.swapaxes(1,0)
         self.tags.load(filename)
     
     def save(self, filename: str = None, format = None):
-        """Save file.
+        """Save file. If the filename is specified, it override `.filename` attribute.
 
         Args:
             filename (str, optional): File to save audio to. Defaults to `self.filename`.
@@ -321,11 +370,6 @@ class Audio:
         samples = (audio1.samples + audio2.samples).clip(-1.0,1.0)
         audio = Audio(samples, audio1.sample_rate)
         return audio
-    
-    def unload(self):
-        """Unload audio samples to save memory. Please note, this will delete the samples, you will not get them back unless you save the file first.
-        """
-        self.samples = None
     
     def __add__(self, value: int | float):
         if not isinstance(value, (int, float, Audio, numpy.ndarray)):
