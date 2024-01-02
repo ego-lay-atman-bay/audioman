@@ -2,13 +2,17 @@ import typing
 
 import logging
 import os
+import subprocess
 from copy import deepcopy
 import numpy
 import soundfile
 import tempfile
 
+from .ffmpeg_commands import setup_ffmpeg_log, log_ffmpeg_output
 from .effect import Effect
 from .audio_tags import AudioTags
+from .format_str import format_str
+
 
 class Audio:
     def __init__(self, file: str | numpy.ndarray = numpy.array([]), sample_rate: int = None) -> None:
@@ -118,15 +122,33 @@ class Audio:
         self.samples = audio.swapaxes(1,0)
         self.tags.load(filename)
     
-    def save(self, filename: str = None, format = None):
+    def save(self, filename: str = None, file_format = None, ffmpeg_options: str = None):
         """Save file. If the filename is specified, it override `.filename` attribute.
 
         Args:
             filename (str, optional): File to save audio to. Defaults to `self.filename`.
-            format (str, optional): File format to save the audio to. Defaults to None.
+            file_format (str, optional): File format to save the audio to. Defaults to None.
+            ffmpeg_options (str, optional): Custom ffmpeg export options. Defaults to '-i "{input}" "{output}"'.
 
         Raises:
             TypeError: filename must be str
+        
+        ## Custom ffmpeg options
+        This is the ffmpeg export command. The input will be formatted with the input, output, format, and metadata. It will use the standard python formatting.
+        
+        Custom ffmpeg options can be used to add compression, custom codecs, and processing that is not easily done using just the samples.
+        
+        Examples:
+        `-i "{input}" "{output}"`
+        `-i "{input}" -acodec flac -compression_level 12 "{output}"`
+        `-i "{input}" -compression_level 12 "{output}"`
+        
+        It can even be used to add an image to audio and make a video from it.
+        `-loop 1 -i "img.jpg" -i "{input}" -shortest "{output_name}.{extension}"`
+        
+        *Make sure to use `{input}` and `{output}` or `{output_name}.{extension}` as `output` is used when saving tags.*
+        
+        Please note: ffmpeg options will include `-hide_banner`, and `-y`. Files will be replaced without confirmation.
         """
         if filename == None:
             filename = self.filename
@@ -136,10 +158,64 @@ class Audio:
         
         if filename != None:
             self.filename = filename
+            
+        if file_format == None:
+            file_format = os.path.splitext(filename)[1][1::]
         
-        if isinstance(self.filename, str):
-            soundfile.write(self.filename, self.samples.swapaxes(1, 0), samplerate = self.sample_rate, format = format)
-            self.tags.save(self.filename)
+        if ffmpeg_options == None:
+            if isinstance(filename, str):
+                soundfile.write(filename, self.samples.swapaxes(1, 0), samplerate = self.sample_rate, format = file_format)
+                self.tags.save(filename)
+        else:
+            if not isinstance(ffmpeg_options, (str, list, tuple)):
+                raise TypeError('ffmpeg options must be "str", "list", or "tuple')
+            
+            try:
+                subprocess.run(['ffmpeg', '-version'])
+            except:
+                raise FileNotFoundError('Cannot run ffmpeg. Make sure ffmpeg is on the PATH.')
+            
+            command = ['ffmpeg', '-hide_banner', '-y',]
+            
+            if isinstance(ffmpeg_options, (list, tuple)):
+                command += ffmpeg_options
+            else:
+                command = f"{' '.join(command)} {ffmpeg_options}"
+            
+            soundfile.write(self.cache_filename, self.samples.swapaxes(1, 0), samplerate = self.sample_rate)
+            
+            
+            format_options = self.tags.expand()
+            format_options['input'] = self.cache_filename
+            format_options['output'] = filename
+            format_options['output_name'] = os.path.splitext(filename)[0]
+            format_options['extension'] = os.path.splitext(filename)[1][1::]
+            format_options['format'] = file_format
+            
+            
+            if isinstance(command, list):
+                for i in range(len(command)):
+                    command[i] = format_str(str(command[i]), **format_options)
+            elif isinstance(command, str):
+                command = format_str(str(command), **format_options)
+            
+            logging.debug(f'command:\n{command}')
+            
+            print(f'command:\n{command}')
+            
+            setup_ffmpeg_log()
+            result = subprocess.run(command)
+            log_ffmpeg_output()
+            
+            result.check_returncode()
+
+            try:
+                self.tags.save(filename)
+            except:
+                logging.info(f'cannot add tags to "{filename}"')
+                logging.log(msg = 'exception', level = logging.DEBUG, exc_info = True)
+        
+            
     
     @property
     def channels(self) -> int:
