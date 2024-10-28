@@ -4,3 +4,5 @@ mutagen==1.47.0
 numpy==1.26.2
 Pillow==10.1.0
 soundfile==0.12.1
+pydub
+audioop-lts # to fix pydub in python 3.13

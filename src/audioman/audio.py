@@ -1,44 +1,60 @@
-import typing
-
+import array
 import logging
+import math
 import os
 import subprocess
-from copy import deepcopy
-import numpy
-import soundfile
 import tempfile
+from copy import deepcopy
+from typing import Annotated, overload, TYPE_CHECKING
 
-from .ffmpeg_commands import setup_ffmpeg_log, log_ffmpeg_output
-from .effect import Effect
+import numpy
+import pydub.effects
+import soundfile
+
 from .audio_tags import AudioTags
+from .effect import Effect
+from .ffmpeg_commands import log_ffmpeg_output, setup_ffmpeg_log, test_ffmpeg, run_ffmpeg_command
 from .format_str import format_str
+from .utils import ratio_to_db
 
+if TYPE_CHECKING:
+    import pydub
 
 class Audio:
-    def __init__(self, file: str | numpy.ndarray = numpy.array([]), sample_rate: int = None) -> None:
+    pydub_sample_width: int = 2
+    
+    def __init__(self, file: str | numpy.ndarray = None, sample_rate: int = None) -> None:
         """Audio object. This is used to manipulate audio samples. Please note, `self.filename` is usually lost when editing audio.
 
         Args:
             file (str | numpy.ndarray, optional): File to load, or samples as numpy array. Defaults to numpy.array([]).
             sample_rate (int, optional): Sample rate. Defaults to file sample rate or 44000.
         """
+        self.__raw_cache = True
+        
         self._samples: numpy.ndarray = None
         self.filename: str = ''
         
         self.tags = AudioTags()
+        
+        if file is None:
+            file = numpy.array([])
         
         if isinstance(file, str):
             self.filename = file
             self.read()
             if sample_rate != None:
                 self.sample_rate = sample_rate
-        elif isinstance(file, numpy.ndarray):
+        elif isinstance(file, (numpy.ndarray, list)):
             if sample_rate == None:
                 sample_rate = 44000
                 
             self.sample_rate = sample_rate
             
-            self.samples: numpy.ndarray = file.copy()
+            if isinstance(file, numpy.ndarray):
+                self.samples: numpy.ndarray = file.copy()
+            elif isinstance(file, list):
+                self.samples: numpy.ndarray = numpy.array(file)
     
     @property
     def cache_filename(self) -> str:
@@ -60,22 +76,65 @@ class Audio:
             self._cache_filename = file.name
         
         return self._cache_filename
+    
+    @property
+    def raw_cache_filename(self) -> str:
+        """The raw data cache filename to use when using the `.unload()` method.
+
+        Returns:
+            str: filename
+        """
+        if not hasattr(self, '_raw_cache_filename') or not os.path.exists(self._raw_cache_filename):
+            
+            with tempfile.NamedTemporaryFile(
+                'w',
+                prefix = 'audioman_',
+                suffix = '.npy',
+                delete = False,
+            ) as file:
+                file.write('')
+            
+            self._raw_cache_filename = file.name
+        
+        return self._raw_cache_filename
 
     def __del__(self):
         if hasattr(self, '_cache_filename') and os.path.exists(self._cache_filename):
             os.remove(self._cache_filename)
             logging.debug(f'deleted: {self._cache_filename}')
+        if hasattr(self, '_raw_cache_filename') and os.path.exists(self._raw_cache_filename):
+            os.remove(self._raw_cache_filename)
+            logging.debug(f'deleted: {self._raw_cache_filename}')
             
-    def unload(self):
+    def unload(self, raw = True):
         """Unload audio samples to save memory. This will also create a temporary wav file in the os temp directory. When you try to access the samples, this temporary file will be loaded (or at least it will try to load it).
+        
+        This method will return the filename. This can be used to edit the file in an external editor, save it to the same file, and then load it again.
+
+        Args:
+            raw (bool, optional): save the samples as a raw .npy file instead of a .wav file.
+        
+        Returns:
+            str: Temporary filename.
         """
         filename = self.filename
-        try:
-            self.save(self.cache_filename)
-            self.samples = None
-        except:
-            logging.debug(f'cannot save file {self.cache_filename}', exc_info = True)
-        self.filename = filename
+        
+        if raw:
+            try:
+                numpy.save(self.raw_cache_filename, self.samples)
+                self.samples = None
+            except:
+                logging.debug(f'cannot save file {self.raw_cache_filename}', exc_info = True)
+        else:
+            try:
+                self.save(self.cache_filename)
+                self.samples = None
+            except:
+                logging.debug(f'cannot save file {self.cache_filename}', exc_info = True)
+
+        self.__raw_cache = raw
+        
+        return self.raw_cache_filename if raw else self.cache_filename
     
     @property
     def samples(self) -> numpy.ndarray:
@@ -87,18 +146,27 @@ class Audio:
         if self._samples is None:
             filename = self.filename
             try:
-                self.read(self.cache_filename)
+                if self.__raw_cache:
+                    self.samples = numpy.load(self.raw_cache_filename)
+                else:
+                    self.read(self.cache_filename)
             except:
                 self.read(filename)
-            
-            self.filename = filename
         
         return self._samples
     @samples.setter
     def samples(self, value: numpy.ndarray):
         self._samples = value
+    
+    @property
+    def rms(self):
+        return math.sqrt(numpy.mean(self.samples**2))
         
-    def read(self, filename: str = None):
+    @property
+    def dBFS(self):
+        return ratio_to_db(self.rms)
+    
+    def read(self, filename: str | None = None):
         """Read audio file.
 
         Args:
@@ -108,7 +176,7 @@ class Audio:
             FileNotFoundError: file not found
             IsADirectoryError: path specified is a directory
         """
-        if not filename == None:
+        if filename not in [self.cache_filename, self.raw_cache_filename] and not filename == None:
             self.filename = filename
         if filename == None:
             filename = self.filename
@@ -118,11 +186,18 @@ class Audio:
         if os.path.isdir(filename):
             raise IsADirectoryError(f"path '{filename}' is a directory, not a file")
         
-        audio, self.sample_rate = soundfile.read(filename, always_2d = True)
+        if filename not in [self.cache_filename, self.raw_cache_filename]:
+            command = f'-hide_banner -loglevel error -y -i "{filename}" "{self.cache_filename}"'
+            
+            run_ffmpeg_command(command)
+        
+        audio, self.sample_rate = soundfile.read(self.cache_filename, always_2d = True)
         self.samples = audio.swapaxes(1,0)
-        self.tags.load(filename)
+        
+        if filename not in [self.cache_filename, self.raw_cache_filename]:
+            self.tags.load(filename)
     
-    def save(self, filename: str = None, file_format = None, ffmpeg_options: str = None):
+    def save(self, filename: str | None = None, file_format: str | None = None, ffmpeg_options: str | None = None):
         """Save file. If the filename is specified, it override `.filename` attribute.
 
         Args:
@@ -139,14 +214,20 @@ class Audio:
         Custom ffmpeg options can be used to add compression, custom codecs, and processing that is not easily done using just the samples.
         
         Examples:
-        `-i "{input}" "{output}"`
-        `-i "{input}" -acodec flac -compression_level 12 "{output}"`
-        `-i "{input}" -compression_level 12 "{output}"`
+        ```
+        -i "{input}" "{output}"
+        ```
+        ```
+        -i "{input}" -acodec flac -compression_level 12 "{output}"
+        ```
+        ```
+        -i "{input}" -compression_level 12 "{output}"
+        ```
         
         It can even be used to add an image to audio and make a video from it.
         `-loop 1 -i "img.jpg" -i "{input}" -shortest "{output_name}.{extension}"`
         
-        *Make sure to use `{input}` and `{output}` or `{output_name}.{extension}` as `output` is used when saving tags.*
+        **Make sure to use `{input}` and `{output}` or `{output_name}.{extension}` as `output` is used when saving tags.**
         
         Please note: ffmpeg options will include `-hide_banner`, and `-y`. Files will be replaced without confirmation.
         """
@@ -156,7 +237,7 @@ class Audio:
         if not isinstance(filename, str):
             raise TypeError('filename must be str')
         
-        if filename != None:
+        if filename not in [self.cache_filename, self.raw_cache_filename] and filename != None:
             self.filename = filename
             
         if file_format == None:
@@ -170,12 +251,7 @@ class Audio:
             if not isinstance(ffmpeg_options, (str, list, tuple)):
                 raise TypeError('ffmpeg options must be "str", "list", or "tuple')
             
-            try:
-                subprocess.run(['ffmpeg', '-version'])
-            except:
-                raise FileNotFoundError('Cannot run ffmpeg. Make sure ffmpeg is on the PATH.')
-            
-            command = ['ffmpeg', '-hide_banner', '-y',]
+            command = ['-hide_banner', '-y', '-loglevel', 'error']
             
             if isinstance(ffmpeg_options, (list, tuple)):
                 command += ffmpeg_options
@@ -189,6 +265,7 @@ class Audio:
             format_options['input'] = self.cache_filename
             format_options['output'] = filename
             format_options['output_name'] = os.path.splitext(filename)[0]
+            format_options['output_folder'] = os.path.dirname(filename)
             format_options['extension'] = os.path.splitext(filename)[1][1::]
             format_options['format'] = file_format
             
@@ -199,15 +276,7 @@ class Audio:
             elif isinstance(command, str):
                 command = format_str(str(command), **format_options)
             
-            logging.debug(f'command:\n{command}')
-            
-            print(f'command:\n{command}')
-            
-            setup_ffmpeg_log()
-            result = subprocess.run(command)
-            log_ffmpeg_output()
-            
-            result.check_returncode()
+            run_ffmpeg_command(command)
 
             try:
                 self.tags.save(filename)
@@ -215,7 +284,7 @@ class Audio:
                 logging.info(f'cannot add tags to "{filename}"')
                 logging.log(msg = 'exception', level = logging.DEBUG, exc_info = True)
         
-            
+    
     
     @property
     def channels(self) -> int:
@@ -281,6 +350,22 @@ class Audio:
             sample_rate = self.sample_rate
             
         return duration / sample_rate
+
+    def samples_to_milliseconds(self, duration: int, sample_rate: int = None) -> float:
+        """Converts samples to seconds.
+
+        Args:
+            duration (int): Duration in samples
+            sample_rate (int, optional): Sample rate. Defaults to `self.sample_rate`.
+
+        Returns:
+            float: Seconds.
+        """
+        
+        if sample_rate == None:
+            sample_rate = self.sample_rate
+            
+        return (duration * 1000) / sample_rate
     
     def add_silence(self, start: int = 0, length: int = None) -> 'Audio':
         """Add silence to audio.
@@ -309,8 +394,7 @@ class Audio:
 
         samples = numpy.append(numpy.append(beginning, middle, axis = 1), end, axis = 1)
         
-        audio = Audio(samples, sample_rate = self.sample_rate)
-        audio.filename = self.filename
+        audio = self.copy(samples)
         
         return audio
     
@@ -353,20 +437,65 @@ class Audio:
         if length == None:
             length = start
             start = 0
-            
+        
         if start < 0:
             start += 1
             
-            if start == 0:
-                return self.copy()
             start = self.length + start
+        
+        if length < 0:
+            length = (self.length - start) + (length + 1)
         
         end = min(start + length, self.length)
         
-        samples = self.samples.swapaxes(1,0)[start:end].swapaxes(1,0)
-        return Audio(samples, sample_rate = self.sample_rate)
+        samples = self.samples[start:end,]
+        return self.copy(samples)
     
-    def apply_effect(self, effect: Effect, start: int = 0):
+    def __getitem__(self, key: int | float | slice):
+        if isinstance(key, tuple):
+            return tuple(self[k] for k in key)
+        if isinstance(key, float):
+            key = self.seconds_to_samples(key)
+        if isinstance(key, int):
+            return self.samples[:,key]
+        if isinstance(key, slice):
+            start = key.start
+            step = key.step
+            stop = key.stop
+            
+            if start == None:
+                start = 0
+            if stop == None:
+                stop = -1
+            
+            
+            if isinstance(start, float) or isinstance(stop, float):
+                start = self.seconds_to_samples(start)
+                stop = self.seconds_to_samples(stop)
+            
+            if start < 0:
+                start += 1
+                
+                start = self.length + start
+            
+            if stop < 0:
+                stop = self.length + (stop + 1)
+                
+            flipped = False
+            
+            if step != None and step < 0:
+                flipped = True
+                step = abs(step)
+            
+            samples = self.samples[:,start:stop:step]
+            
+            if flipped:
+                samples = numpy.flip(samples, 1)
+            
+            return self.copy(samples)
+
+    
+    def apply_effect(self, effect: Effect, start: int = None, length: int | None = None):
         """Apply effect.
 
         Args:
@@ -382,48 +511,90 @@ class Audio:
         if not isinstance(effect, Effect):
             raise TypeError('effects must inherit from the Effect class')
         
-        if not isinstance(effect.length, int):
-            if isinstance(effect.length, (float, str)):
-                effect.length = int(effect.length)
-            else:
-                effect.length = self.length
+        split = self.split_around(start, length)
         
-        return self.apply_scaler(effect.get(), start = start)
+        if effect.TYPE == 'audio':
+            middle = Audio(split[1], self.sample_rate)
+        else:
+            middle = split[1]
+            
+        applied = effect.apply(middle)
+        
+        new_samples = None
+        
+        if isinstance(applied, Audio):
+            new_samples = applied.samples
+        elif isinstance(applied, numpy.ndarray):
+            new_samples = applied
+        else:
+            raise TypeError('effect returned non Audio or numpy.ndarray')
+        
+        logging.debug(f'shape: {self.samples.shape}')
+        logging.debug(f'split[0]: {repr(split[0])}')
+        logging.debug(f'new_samples: {repr(new_samples)}')
+        logging.debug(f'split[2]: {repr(split[2])}')
+        
+        return self.copy(
+            numpy.concatenate(
+                (
+                    split[0],
+                    new_samples,
+                    split[2],
+                ),
+                axis = 1,
+            )
+        )
     
-    def apply_scaler(self, scaler: numpy.ndarray, start: int = 0) -> 'Audio':
-        """Apply a scaler to the audio samples.
+    @overload
+    def split_around(self) -> Annotated[list[numpy.ndarray], 3]: ...
+    @overload
+    def split_around(self, length: int) -> Annotated[list[numpy.ndarray], 3]: ...
+    @overload
+    def split_around(self, start: int, length: int) -> Annotated[list[numpy.ndarray], 3]: ...
+    def split_around(self, start: int | None = None, length: int | None = None) -> Annotated[list[numpy.ndarray], 3]:
+        """Split samples from start to length, keeping all parts.
 
         Args:
-            scaler (numpy.ndarray): Scaler to apply to the audio samples.
             start (int, optional): Where to apply the scaler in samples. Defaults to 0.
+            length (int, optional): The length to split by. Defaults to length of audio.
         
         Returns:
-            Audio: New Audio with applied scaler
+            list[numpy.ndarray]: [start, middle, end]
         """
         samples = self.samples.copy()
 
-        length = len(scaler)
+        if length == None:
+            if (start == None):
+                length = self.length
+            else:
+                length = start
+            start = 0
+        
+        if start == None:
+            start = 0
         
         if start < 0:
-            # start += 1
+            start += 1
+            
             start = self.length + start
         
+        if length < 0:
+            length = (self.length - start) + (length + 1)
+        
         end = min(start + length, self.length)
-        scaler = scaler[:end - start]
 
-        for channel in samples:
-            channel[start:end] = channel[start:end] * scaler
-        
-        audio = Audio(samples, sample_rate = self.sample_rate)
-        audio.filename = self.filename
-        
-        return audio
+        return [
+            samples[:,0:max(0, start)],
+            samples[:,start:end],
+            samples[:,min(end, self.length):-1]
+        ]
     
-    def mix(self, audio2: 'Audio') -> 'Audio':
+    def mix(self, audio2: 'Audio', start: int = 0) -> 'Audio':
         """Mix audio together. This will overlay this audio and the new audio onto each other, so they play at the same time.
 
         Args:
             audio2 (Audio): Audio to mix into this audio.
+            start (int, optional): Second audio start sample. Defaults to 0.
 
         Returns:
             Audio: New mixed audio.
@@ -431,6 +602,8 @@ class Audio:
 
         audio1 = self.copy()
         audio2 = audio2.copy()
+        
+        audio2 = audio2.add_silence(0 if start >= 0 else -1, abs(start))
 
         if audio1.channels > audio2.channels:
             audio2.channels = audio1.channels
@@ -438,13 +611,19 @@ class Audio:
             audio1.channels = audio2.channels
         
         if audio1.length > audio2.length:
-            audio2.add_silence(-1, audio1.length - audio2.length)
+            audio2 = audio2.add_silence(-1, audio1.length - audio2.length)
         elif audio2.length > audio1.length:
-            audio1.add_silence(-1, audio2.length - audio1.length)
+            audio1 = audio1.add_silence(-1, audio2.length - audio1.length)
         
         samples = (audio1.samples + audio2.samples).clip(-1.0,1.0)
-        audio = Audio(samples, audio1.sample_rate)
+        audio = self.copy(samples, audio1.sample_rate)
         return audio
+    
+    def reverse(self):
+        return self[::-1]
+    
+    def apply_gain(self, gain: float = 0) -> 'Audio':
+        return self.copy(self.samples * (10 ** (gain / 20)))
     
     def __add__(self, value: int | float):
         if not isinstance(value, (int, float, Audio, numpy.ndarray)):
@@ -469,10 +648,7 @@ class Audio:
             return audio
         
         elif isinstance(value, (int, float)):
-            samples = self.samples + value
-            
-            audio = Audio(samples, sample_rate = self.sample_rate)
-            return audio
+            return self.apply_gain(value)
     
     def __radd__(self, value: int | float):
         return self.__add__(value)
@@ -486,13 +662,12 @@ class Audio:
         if isinstance(value, Audio):
             raise TypeError('cannot subtract Audio from each other')
         if isinstance(value, (float, int)):
-            samples = self.samples - value
-            return Audio(samples, sample_rate = self.sample_rate)
+            return self.apply_gain(-value)
     
     def __rsub__(self, value: float | int):
         return self.__sub__(value)
     
-    def convert_to_sample_rate(self, sample_rate: int):
+    def set_sample_rate(self, sample_rate: int):
         """I want this to be able to convert a sound to a different sample rate without changing how it sounds. However, right now it just sets the sample rate without changing the samples.
 
         Args:
@@ -502,12 +677,40 @@ class Audio:
             TypeError: sample_rate must be 'int'
             ValueError: sample_rate must be greater than 0
         """
-        if not isinstance(sample_rate, int):
-            raise TypeError("sample_rate must be 'int'")
-        if sample_rate < 1:
-            raise ValueError("sample_rate must be greater than 0")
+        assert isinstance(sample_rate, int)
+        assert sample_rate > 1
+        
         
         self.sample_rate = sample_rate
+    
+    def copy(
+        self,
+        samples: numpy.ndarray | None = None,
+        sample_rate: int | None = None,
+    ) -> "Audio":
+        """Create a copy of this Audio object, with the option of passing in custom samples or sample rate. This is useful for keeping the filename on a modified Audio object.
+
+        Args:
+            samples (numpy.ndarray | None, optional): New samples. Defaults to current samples.
+            sample_rate (int | None, optional): New sample rate. Defaults to current sample rate.
+
+        Returns:
+            Audio: New Audio object with the same filename.
+        """
+        if samples is None:
+            samples = self.samples.copy()
+        if sample_rate == None:
+            sample_rate = self.sample_rate
+        
+        audio = Audio(
+            samples,
+            sample_rate,
+        )
+        
+        audio.filename = self.filename
+        audio.tags = deepcopy(self.tags)
+        
+        return audio
     
     @property
     def length(self) -> int:
@@ -521,13 +724,68 @@ class Audio:
     def __len__(self) -> int:
         return self.samples.shape[1]
     
-    def copy(self) -> 'Audio':
-        """Copy this audio into a new Audio object.
+    def pydub(self):
+        return PyDubAudioSegment(self)
+    
+class PyDubAudioSegment():
+    def __init__(self, audio: Audio) -> None:
+        import pydub
+        
+        if not isinstance(audio, Audio):
+            raise TypeError('value must be Audio object')
+        
+        self._audio: Audio = audio
+        self.audio_segment: 'pydub.AudioSegment' = None
+        self.filename: str = None
+    
+    def __enter__(self):
+        self.audio_segment = self.np_to_pydub(self._audio.samples, self._audio.sample_rate)
+        self.filename = self._audio.unload()
+        # self.audio_segment = pydub.AudioSegment.from_file(self.filename)
+        
+        return self
+    
+    def __exit__(self, exc_type, exc_value, traceback):
+        samples, sample_rate = self.pydub_to_np(self.audio_segment)
+        self._audio.samples = samples
+        self._audio.sample_rate = sample_rate
+        
+        return False
+    
+    def set(self, segment: 'pydub.AudioSegment'):
+        import pydub
+        
+        if not isinstance(segment, pydub.AudioSegment):
+            raise TypeError('value must be pydub AudioSegment')
+        
+        self.audio_segment = segment
+    
+    def np_to_pydub(self, samples: numpy.ndarray, sample_rate: int):
+        import pydub
 
-        Returns:
-            Audio: New Audio object.
+        new = samples.swapaxes(1,0).reshape(-1) * (1 << (8 * self._audio.pydub_sample_width - 1))
+
+        sample_array = array.array('l', new.astype(numpy.int64))
+
+        return pydub.AudioSegment(sample_array, frame_rate = sample_rate, channels = samples.shape[0], sample_width = self._audio.pydub_sample_width)
+    
+    def pydub_to_np(self, audio: 'pydub.AudioSegment') -> tuple[numpy.ndarray, int]:
         """
-        audio = Audio(self.samples, self.sample_rate)
-        audio.filename = self.filename
-        audio.tags = deepcopy(self.tags)
-        return audio
+        This was taken from https://stackoverflow.com/a/66922265/17129659
+        
+        Converts pydub audio segment into numpy.float64 of shape [channels, duration_in_seconds*sample_rate],
+        where each value is in range [-1.0, 1.0]. 
+        Returns tuple (audio_np_array, sample_rate).
+        """
+        
+        import pydub
+        
+        return (
+            (numpy.array(
+                audio.get_array_of_samples(),
+                dtype = numpy.float64
+            ).reshape(
+                (audio.channels, -1)
+            ) / (1 << (8 * audio.sample_width - 1))),
+            audio.frame_rate,
+        )

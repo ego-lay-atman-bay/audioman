@@ -1,31 +1,37 @@
-from . import _tags
-
-
+import io
 import os
+import re
+import typing
+from typing import Any, overload
+from copy import deepcopy
+
 import mutagen
 import PIL
-from PIL import Image
 from mutagen import id3
+from PIL import Image
 
-
-import io
-import typing
+from . import _tags
+from .normalize_filename import normalize_filename
 
 
 class AudioTags(dict):
-    def __init__(self, file: str = None) -> None:
+    def __init__(self, file: str | dict | None = None) -> None:
         """Audio metadata tags. This serves as a way to set audio metadata on different file formats.
 
         Args:
             file (str, optional): File to import metadata tags from. This can be file path, or filelike object. Defaults to None.
         """
-        super().__init__()
-        self.base_path: str = '.'
-
-        self._picture: Image.Image = None
-
         self.filename = None
-        self.load(file)
+        self._picture: Image.Image = None
+        self.picture_filename: str | None = None
+        
+        if isinstance(file, str) or file == None:
+            super().__init__()
+            
+            self.load(file)
+        else:
+            super().__init__(file)
+
         
     def load(self, file: str = None):
         """Load file.
@@ -109,6 +115,13 @@ class AudioTags(dict):
         if key == 'picture':
             self.picture = value
             return
+        
+        if isinstance(value, str) and ';' in value:
+            value = [str(p).replace(r'\;', ';') for p in re.split(r'(?<!\\);', value)]
+            if len(value) == 0:
+                value = None
+            elif len(value) == 1:
+                value = value[0]
 
         return super().__setitem__(key, value)
     
@@ -169,6 +182,29 @@ class AudioTags(dict):
 
         return super().pop(tag, default)
 
+    @overload
+    def setdefault(self, tag: str, default: str = None) -> Any:
+        """If the tag exists, don't change it, if it doesn't exit, add it with the default value.
+
+        Args:
+            tag (str): Tag
+            default (str, optional): Default value. Defaults to None.
+
+        Raises:
+            TypeError: Tag must be str
+
+        Returns:
+            Any: The value of the 
+        """
+        ...
+    @overload
+    def setdefault(self, tag: dict[str, str]) -> None:
+        """Set multiple tags and their defaults.
+
+        Args:
+            tag (dict[str, str]): Dictionary of tags and defaults
+        """
+        ...
     def setdefault(self, tag: str, default: str = None):
         if not isinstance(tag, (str, dict, list)):
             raise TypeError('tag must be str')
@@ -223,17 +259,20 @@ class AudioTags(dict):
         
         Set:
             image (PIL.Image | str | bytes | filelike | None): Image to set to. Can be PIL Image, path to file, file bytes, filelike object, or None.
-"""
+        """
         return self._picture
     @picture.setter
     def picture(self, image: Image.Image | str | bytes | io.BytesIO | None):
         try:
+            picture = None
             if image == None:
                 picture = None
             elif isinstance(image, str) or (hasattr(image, 'read') and hasattr(image, 'seek') and hasattr(image, 'tell')):
                 if isinstance(image, str):
-                    image = os.path.join(self.base_path, image)
-                picture = Image.open(image)
+                    image = normalize_filename(image)
+                if os.path.exists(image):
+                    self.picture_filename = image
+                    picture = Image.open(image)
             elif isinstance(image, bytes):
                 image = io.BytesIO(image)
                 image.seek(0)
@@ -246,3 +285,14 @@ class AudioTags(dict):
             picture = None
 
         self._picture = picture
+    
+    def get_tag_name(self, tag):
+        return _tags.get_tag_name(tag)
+    
+    def copy(self) -> 'AudioTags':
+        """A deep copy of AudioTags.
+
+        Returns:
+            AudioTags: Copy of AudioTags.
+        """
+        return deepcopy(self)

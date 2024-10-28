@@ -1,5 +1,5 @@
 # audioman
-Python library for manipulating audio files. This can be used for editing audio, or tagging audio.
+Lightweight Python library for manipulating audio files. This can be used for editing audio, or tagging audio.
 
 ## Installation
 
@@ -115,7 +115,7 @@ mixed = audio.mix(drums)
 
 ## Effects
 
-There are effects that you can apply to audio. Currently the only effect is an adjustable fade, but you can make your own easily.
+There are effects that you can apply to audio.
 
 To use effects, create an effect object, and apply the options.
 
@@ -154,4 +154,6 @@ print(AdjustableFade.OPTIONS)
 """
 ```
 
+## PyDub support
 
+While pydub is in fact a dependency, and there is a function to be able to convert to modify an `Audio` object with pydub, it is not really used much in the library. Some effects used pydub to make it easier to code, but I have since recreated them with my library.

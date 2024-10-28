@@ -1,60 +1,78 @@
+from abc import abstractmethod
+import typing
 from typing import Literal, Any
 
 import numpy
-from copy import deepcopy
+
+# To prevent circular import when running
+if typing.TYPE_CHECKING:
+    from ..audio import Audio
 
 class Effect:
     OPTIONS: dict[str, dict[Literal['default', 'type'], Any]] = {}
+    DEFAULT: str = None
+    TYPE: Literal['samples', 'audio'] = 'samples'
     
     def __init__(
         self,
-        length: int = None,
-        duration: float = None,
-        sample_rate: int = None,
-        options: dict = {},
+        options: dict = None,
         **kwargs,
     ) -> None:
         """Audio effect. This effect will last the specified length in samples. If the duration is specified (in seconds), then it will use that length. This will assume the sample rate is `4400`, unless specified.
 
         Args:
-            length (int, optional): Length of effect in samples. Defaults to None.
-            duration (float, optional): Duration of effect in seconds. Defaults to None.
-            sample_rate (int, optional): Audio Sample rate. Defaults to 4400. This may be used by some effects.
             **options (dict[str, Any]): Effect options. Not all effects have the same options. Available options can be found in the `OPTIONS` property.
         """
-        self.sample_rate = 4400
-        if isinstance(sample_rate, (int, float)):
-            sample_rate = int(sample_rate)
-            self.sample_rate = sample_rate
-            
-        self.length = 0
-        if isinstance(length, int):
-            self.length = length
-        elif isinstance(duration, (int, float)):
-            self.length = int(duration * self.sample_rate)
-        
 
         self.options = {}
+        
+        if options == None:
+            options = {}
 
         for option in self.OPTIONS:
             self.options[option] = self.OPTIONS[option]['default']
         
         for option in kwargs:
+            if kwargs[option] == None:
+                self.options[option] = self.OPTIONS[option].get('default', self.OPTIONS[option]['type']())
+                continue
             if option in self.OPTIONS and 'type' in self.OPTIONS[option]:
-                self.options[option] = self.OPTIONS[option]['type'](kwargs[option])
+                try:
+                    self.options[option] = self.OPTIONS[option]['type'](kwargs[option])
+                except:
+                    self.options[option] = self.OPTIONS[option].get('default', self.OPTIONS[option]['type']())
             else:
                 self.options[option] = kwargs[option]
             
         for option in options:
             if option in self.OPTIONS and 'type' in self.OPTIONS[option]:
-                self.options[option] = self.OPTIONS[option]['type'](options[option])
+                if options[option] == None:
+                    self.options[option] = self.OPTIONS[option].get('default', self.OPTIONS[option]['type']())
+                    continue
+                try:
+                    self.options[option] = self.OPTIONS[option]['type'](options[option])
+                except Exception as e:
+                    e.add_note(f'{option}: {options[option]}')
+                    self.options[option] = self.OPTIONS[option].get('default', self.OPTIONS[option]['type']())
+                    raise e
             else:
                 self.options[option] = options[option]
     
-    def get(self) -> numpy.ndarray:
-        """Get the effect scaler array.
-
-        Returns:
-            numpy.ndarray: 1-d numpy array with values between 0 and 1.
-        """
-        return numpy.array([1] * self.length)
+    def validate_options(self, options: dict[str, Any]):
+        for option in options:
+            if options[option] == None:
+                self.options[option] = self.OPTIONS[option].get('default', self.OPTIONS[option]['type']())
+                continue
+            if option in self.OPTIONS and 'type' in self.OPTIONS[option]:
+                try:
+                    self.options[option] = self.OPTIONS[option]['type'](options[option])
+                except:
+                    self.options[option] = self.OPTIONS[option].get('default', self.OPTIONS[option]['type']())
+            else:
+                self.options[option] = options[option]
+    
+    @abstractmethod
+    def apply(self, samples: 'numpy.ndarray | Audio') -> 'numpy.ndarray | Audio':
+        pass
+    
+    

@@ -3,11 +3,15 @@ import io
 import filetype
 # import mimetypes # I'm gonna look into this
 import base64
-from mutagen import id3, flac, _vorbis, FileType
+from mutagen import id3, flac, _vorbis, FileType, easyid3
 from mutagen.flac import Picture
 import typing
 from typing import Literal, Type
 from PIL import Image
+
+easyid3.EasyID3()
+
+from .normalize_filename import normalize_filename
 
 ID3_FRAMES: dict[str, Type[id3._frames.Frame]] = {
     "AENC": id3.AENC,
@@ -202,8 +206,9 @@ TAGS: list[
                 "id",
                 "values",
                 "default",
+                "type",
             ],
-            str | list[str],
+            str | list[str] | Literal["string", "number", "list"],
         ],
     ]
 ] = [
@@ -249,6 +254,7 @@ TAGS: list[
         "name": ["genres", "genre"],
         "id3": {"id": "TCON", "values": ["text", "genres"], "default": "genres"},
         "vorbis": "genre",
+        "type": "list",
     },
     {"name": ["copyright"], "id3": "TCOP", "vorbis": "copyright"},
     {"name": ["date"], "id3": "TDAT", "vorbis": "date"},
@@ -275,7 +281,7 @@ TAGS: list[
     {"name": ["origartist"], "id3": "TOPE", "vorbis": "origartist"},
     {"name": ["originalreleaseyear"], "id3": "TDOR", "vorbis": "originaldate"},
     {"name": ["fileowner"], "id3": "TOWN", "vorbis": "fileowner"},
-    {"name": ["artist"], "id3": "TPE1", "vorbis": "artist"},
+    {"name": ["artist"], "id3": "TPE1", "vorbis": "artist", "type": "list"},
     {"name": ["band", "albumartist"], "id3": "TPE2", "vorbis": "albumartist"},
     {"name": ["conductor"], "id3": "TPE3", "vorbis": "conductor"},
     {"name": ["interpretedby", "remixer"], "id3": "TPE4", "vorbis": "REMIXER"},
@@ -329,12 +335,12 @@ TAGS: list[
     {"name": ["encodedby"], "id3": "TENC", "vorbis": "encoded by"},
     {"name": ["encoder"], "id3": "TENC", "vorbis": "encoder"},
     {
-        "name": ["lyrics", "syncedlyrics", "synlyrics"],
+        "name": ["syncedlyrics", "synlyrics"],
         "id3": "SYLT",
         "vorbis": "lyrics",
     },
     {
-        "name": ["unsyncedlyrics"],
+        "name": ["lyrics", "unsyncedlyrics"],
         "id3": "USLT",
         "vorbis": "unsyncedlyrics",
     },
@@ -348,7 +354,7 @@ TAGS: list[
         "vorbis": "accurateripresult",
     },
     {
-        "name": ["albumartistsortorder", "albumartistsort"],
+        "name": ["albumartistsort", "albumartistsortorder"],
         "id3": "TSO2",
         "vorbis": "albumartistsort",
     },
@@ -378,8 +384,9 @@ TAGS: list[
         "id3": "TRSO",
         "vorbis": "netradioowner",
     },
-    {"name": ["subtitle", "setsubtitle"], "id3": "TSST", "vorbis": "setsubtitle"},
+    {"name": ["discsubtitle", "disksubtitle", "setsubtitle"], "id3": "TSST", "vorbis": "discsubtitle"},
     {"name": ["titlesort"], "id3": "TSOT", "vorbis": "titlesort"},
+    {"name": ["artistsort", "artistssort", "artistsortorder"], "id3": "TSOP", "vorbis": "ARTISTSORT"},
     {"name": ["chapter"], "id3": "CHAP", "vorbis": "chapter"},
     {"name": ["toc", "tableofcontents"], "id3": "CTOC", "vorbis": "tableofcontents"},
 ]
@@ -422,6 +429,8 @@ def get_tag(audio: FileType, tag: str) -> str:
         return _get_id3_tag(audio.tags, tag)
     elif isinstance(audio.tags, _vorbis.VCommentDict):
         return _get_vorbis_tag(audio.tags, tag)
+    else:
+        return
 
     raise NotImplementedError("audio type not supported")
 
@@ -473,6 +482,8 @@ def get_picture(audio: FileType):
         return _get_flac_picture(audio)
     elif isinstance(audio.tags, _vorbis.VCommentDict):
         return _get_vorbis_picture(audio.tags)
+    else:
+        return
 
     raise NotImplementedError("audio type not supported")
 
@@ -524,6 +535,7 @@ def set_picture(audio: FileType, image: str | bytes | io.BytesIO | Image.Image):
         return
     
     if isinstance(image, str):
+        image = normalize_filename(image)
         picture = Image.open(image)
     elif isinstance(image, bytes):
         data = io.BytesIO(image)
@@ -555,6 +567,7 @@ def _set_id3_picture(tags: id3.ID3, image: Image.Image):
         return
     
     picture = io.BytesIO()
+    image = image.convert('RGB')
     image.save(picture, format = 'JPEG')
     
     picture.seek(0)
@@ -579,6 +592,7 @@ def _set_flac_picture(audio: FileType, image: Image.Image):
         return
     
     picture = io.BytesIO()
+    image = image.convert('RGB')
     image.save(picture, format = 'JPEG')
     
     picture.seek(0)
@@ -759,9 +773,12 @@ def _get_id3_tag(tags: id3.ID3, tag: str):
             value = values[0]
     
     if isinstance(value, id3._frames.Frame):
-        value = getattr(value, prop)
-        if prop == 'text':
-            value = str(value[0])
+        if hasattr(value, prop):
+            value = getattr(value, prop)
+            if prop == 'text':
+                value = str(value[0])
+        else:
+            value = value
 
     return value
 
@@ -773,6 +790,10 @@ def _get_vorbis_tag(tags: flac.VCFLACDict, tag: str):
 
 
 def _set_id3_tag(tags: id3.ID3, tag: str, value: str = None, **kwargs):
+    if isinstance(value, id3._frames.Frame):
+        tags.add(value)
+        return
+    
     info = get_tag_info("id3", tag)
     id = info
     genres = False
@@ -783,7 +804,7 @@ def _set_id3_tag(tags: id3.ID3, tag: str, value: str = None, **kwargs):
             if "default" in info:
                 if info["default"] not in kwargs:
                     kwargs[info["default"]] = value
-                    if info['default'] == 'genres':
+                    if info.get('default') == 'genres':
                         genres = True
             else:
                 if "text" not in kwargs:
@@ -795,7 +816,6 @@ def _set_id3_tag(tags: id3.ID3, tag: str, value: str = None, **kwargs):
     
     if 'text' in kwargs and not isinstance(kwargs["text"], (list, tuple, dict, set, slice)):
         kwargs["text"] = str(kwargs["text"])
-        
 
     split = id.split(":")
     id = split[0]
@@ -823,6 +843,11 @@ def _set_id3_tag(tags: id3.ID3, tag: str, value: str = None, **kwargs):
 
 
 def _set_vorbis_tag(tags: flac.VCFLACDict, tag: str, value: str):
+    if isinstance(value, id3._frames.Frame):
+        logging.debug(f"tag: {tag} is an id3 frame")
+        logging.debug(f"value: {value}")
+        return
+    
     id = get_tag_id("vorbis", tag)
     
     if not isinstance(value, (list, tuple, dict, set, slice)):

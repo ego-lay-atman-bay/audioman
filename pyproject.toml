@@ -23,7 +23,11 @@ dependencies = [
   "numpy",
   "Pillow",
   "setuptools",
-  "soundfile"
+  "soundfile",
+  "charset_normalizer",
+  "pydub",
+  "audioop-lts", # to fix pydub in python 3.13
+  "pathvalidate",
 ]
 dynamic = ["version"]
 
