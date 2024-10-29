@@ -769,14 +769,21 @@ def _get_id3_tag(tags: id3.ID3, tag: str):
         name = id + ((':' + desc) if isinstance(desc, str) else '')
         values = tags.getall(name)
         
+        
         if len(values) > 0:
-            value = values[0]
+            if len(values) == 1:
+                value = values[0]
+            else:
+                value = values
     
     if isinstance(value, id3._frames.Frame):
         if hasattr(value, prop):
             value = getattr(value, prop)
             if prop == 'text':
-                value = str(value[0])
+                if len(value) == 1:
+                    value = str(value[0])
+                else:
+                    value = [str(v) for v in value]
         else:
             value = value
 
@@ -786,7 +793,12 @@ def _get_id3_tag(tags: id3.ID3, tag: str):
 def _get_vorbis_tag(tags: flac.VCFLACDict, tag: str):
     id = get_tag_id("vorbis", tag)
 
-    return tags.get(id, [None])[0]
+    value = tags.get(id, [None])
+    
+    if len(value) == 1:
+        value = value[0]
+
+    return value
 
 
 def _set_id3_tag(tags: id3.ID3, tag: str, value: str = None, **kwargs):
