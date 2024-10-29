@@ -1,6 +1,12 @@
 # audioman
 Lightweight Python library for manipulating audio files. This can be used for editing audio, or tagging audio.
 
+> [!WARNING]
+> If you are using python 3.13, you have to install `audioop-lts`
+> ```shell
+> pip install audioop-lts
+> ```
+
 ## Installation
 
 Install `audioman` using pip
