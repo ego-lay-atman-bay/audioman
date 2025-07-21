@@ -206,6 +206,7 @@ class AdjustableFade(Effect):
         env: numpy.ndarray[float],
     ) -> numpy.ndarray[float]:
         return self.scale_curve(gain0, gain1,
+            # (env if (power == 1) else env ** power))
             (env if (power == 1) else numpy.exp(power * numpy.log(env))))
 
 

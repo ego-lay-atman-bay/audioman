@@ -2,7 +2,6 @@ import array
 import logging
 import math
 import os
-import subprocess
 import tempfile
 from copy import deepcopy
 from typing import Annotated, overload, TYPE_CHECKING
@@ -231,6 +230,7 @@ class Audio:
         
         Please note: ffmpeg options will include `-hide_banner`, and `-y`. Files will be replaced without confirmation.
         """
+        
         if filename == None:
             filename = self.filename
         
@@ -243,11 +243,15 @@ class Audio:
         if file_format == None:
             file_format = os.path.splitext(filename)[1][1::]
         
-        if ffmpeg_options == None:
-            if isinstance(filename, str):
-                soundfile.write(filename, self.samples.swapaxes(1, 0), samplerate = self.sample_rate, format = file_format)
-                self.tags.save(filename)
-        else:
+        if ffmpeg_options is None:
+            try:
+                if isinstance(filename, str):
+                    soundfile.write(filename, self.samples.swapaxes(1, 0), samplerate = self.sample_rate, format = file_format)
+                    self.tags.save(filename)
+            except:
+                ffmpeg_options = ['-i', self.cache_filename, filename]
+
+        if ffmpeg_options is not None:
             if not isinstance(ffmpeg_options, (str, list, tuple)):
                 raise TypeError('ffmpeg options must be "str", "list", or "tuple')
             
@@ -448,7 +452,7 @@ class Audio:
         
         end = min(start + length, self.length)
         
-        samples = self.samples[start:end,]
+        samples = self.samples[:,start:end]
         return self.copy(samples)
     
     def __getitem__(self, key: int | float | slice):

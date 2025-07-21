@@ -527,6 +527,12 @@ def set_picture(audio: FileType, image: str | bytes | io.BytesIO | Image.Image):
         TypeError: not mutagen audio object
         TypeError: not a valid image
         NotImplementedError: uknown filetype
+    
+    Examples:
+        >> print('hello')
+        >> print('hello')
+        >> print('hello')
+    
     """
     if not isinstance(audio, FileType):
         raise TypeError("not mutagen audio object")
@@ -867,7 +873,11 @@ def _set_vorbis_tag(tags: flac.VCFLACDict, tag: str, value: str):
 
     logging.debug(f"tag: {tag}\nvalue: {value}")
 
-    tags[id] = value
+    try:
+        tags[id] = value
+    except ValueError as e:
+        e.add_note(f'{(id)} = {value}')
+        raise
 
 
 def _remove_id3_tag(tags: id3.ID3, tag: str):
